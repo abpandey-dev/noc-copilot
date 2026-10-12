@@ -22,15 +22,19 @@ def _baseline(s: Scenario) -> tuple[RCA | None, str | None]:
     return analytics.baseline_rca(s), None
 
 
-def _claude_triage(model: str, effort: str):
+def _claude_triage(model: str, effort: str, totals: dict):
     from noc_copilot.agent import NocAgent
 
     agent = NocAgent(model=model, effort=effort)
 
     def triage(s: Scenario) -> tuple[RCA | None, str | None]:
         r = agent.investigate(s)
+        cost = f"${r.cost_usd:.4f}" if r.cost_usd is not None else "n/a"
         print(f"  seed {s.seed}: {r.turns} turns, {len(r.trace)} tool calls, "
-              f"{r.input_tokens + r.output_tokens} tokens, {r.latency_s}s", file=sys.stderr)
+              f"{r.input_tokens}+{r.output_tokens} tokens, {r.latency_s}s, {cost}", file=sys.stderr)
+        totals["cost"] += r.cost_usd or 0.0
+        totals["latency"] += r.latency_s
+        totals["tool_calls"] += len(r.trace)
         return r.rca, r.error
 
     return triage
@@ -103,7 +107,9 @@ def main(argv: list[str] | None = None) -> int:
                 print("Audit trail:")
                 for t in r.trace:
                     print(f"  turn {t['turn']}: {t['tool']}({json.dumps(t['input'])}){'  [error]' if t['is_error'] else ''}")
-            print(f"\n{r.turns} turns, {len(r.trace)} tool calls, {r.input_tokens}+{r.output_tokens} tokens, {r.latency_s}s")
+            cost = f", ${r.cost_usd:.4f}" if r.cost_usd is not None else ""
+            print(f"\n{r.turns} turns, {len(r.trace)} tool calls, {r.input_tokens}+{r.output_tokens} tokens, "
+                  f"{r.latency_s}s{cost}")
             if r.error:
                 print(f"Error: {r.error}")
             rca = r.rca
@@ -112,14 +118,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nGround truth: {s.fault_type} at {s.root_cause} -> {'CORRECT' if ok else 'WRONG'}")
         return 0
 
-    triage = _baseline if args.method == "baseline" else _claude_triage(args.model, args.effort)
+    totals = {"cost": 0.0, "latency": 0.0, "tool_calls": 0}
+    triage = _baseline if args.method == "baseline" else _claude_triage(args.model, args.effort, totals)
     label = "Alarm-rule baseline" if args.method == "baseline" else f"Claude agent ({args.model}, {args.effort})"
     result = run_benchmark(label, triage, n=args.n)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    (out / f"benchmark_{args.method}.json").write_text(result.model_dump_json(indent=2), encoding="utf-8")
+    name = "baseline" if args.method == "baseline" else f"{args.model}_{args.effort}"
+    (out / f"benchmark_{name}.json").write_text(result.model_dump_json(indent=2), encoding="utf-8")
     table = to_markdown([result])
-    (out / f"benchmark_{args.method}.md").write_text(table, encoding="utf-8")
+    if args.method == "claude":
+        n = len(result.cases)
+        table += (f"\nTotal cost ${totals['cost']:.2f} (${totals['cost'] / n:.4f}/incident), "
+                  f"avg {totals['latency'] / n:.1f}s and {totals['tool_calls'] / n:.1f} tool calls per incident.\n")
+    (out / f"benchmark_{name}.md").write_text(table, encoding="utf-8")
     print(table)
     misses = [c for c in result.cases if not (c.type_correct and c.entity_correct)]
     for c in misses:

@@ -21,6 +21,22 @@ from noc_copilot.tools import TOOL_DEFINITIONS, NocTools, ToolError
 
 DEFAULT_MODEL = "claude-opus-5-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+# Server-side refusal fallbacks ("default" mode) are only available on these models.
+FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"}
+
+# USD per million tokens (input, output) - used to report cost per incident.
+PRICES = {
+    "claude-opus-5-5": (4.00, 20.00),
+    "claude-sonnet-5-5": (2.00, 10.00),
+    "claude-haiku-5-5": (0.10, 0.50),
+}
+
+
+def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float | None:
+    if model not in PRICES:
+        return None
+    p_in, p_out = PRICES[model]
+    return (input_tokens * p_in + output_tokens * p_out) / 1_000_000
 
 SYSTEM_PROMPT = """You are a senior NOC (network operations centre) engineer for a 5G mobile network in Germany.
 An incident is in progress. Investigate it with the tools and find the single most likely root cause.
@@ -46,6 +62,7 @@ class AgentResult:
     input_tokens: int = 0
     output_tokens: int = 0
     latency_s: float = 0.0
+    cost_usd: float | None = None
     error: str | None = None
 
 
@@ -63,6 +80,11 @@ class NocAgent:
         result = AgentResult(rca=None)
         start = time.perf_counter()
 
+        extra = {}
+        if self.model in FALLBACK_MODELS:
+            # A declined request is retried on Anthropic's recommended fallback model.
+            extra = {"betas": [FALLBACK_BETA], "fallbacks": "default"}
+
         for turn in range(1, self.max_turns + 1):
             response = self.client.beta.messages.create(
                 model=self.model,
@@ -71,8 +93,7 @@ class NocAgent:
                 tools=TOOL_DEFINITIONS,
                 messages=messages,
                 output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": RCA_SCHEMA}},
-                betas=[FALLBACK_BETA],
-                fallbacks="default",  # a declined request is retried on Anthropic's recommended fallback model
+                **extra,
             )
             result.turns = turn
             result.input_tokens += response.usage.input_tokens
@@ -116,4 +137,5 @@ class NocAgent:
             result.error = f"No final answer after {self.max_turns} turns"
 
         result.latency_s = round(time.perf_counter() - start, 2)
+        result.cost_usd = estimate_cost(self.model, result.input_tokens, result.output_tokens)
         return result
