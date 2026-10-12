@@ -45,7 +45,8 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "find_kpi_anomalies",
-        "description": "Scan every cell and the core for KPI anomalies and return them, largest change first. "
+        "description": "Scan every cell and the core for KPI anomalies, grouped by site (or the core), largest "
+                       "change first. Each group lists the affected cells and the % change range per KPI. "
                        "Use this to spot problems that raised no alarm.",
         "strict": True,
         "input_schema": _schema({}, []),
@@ -104,7 +105,19 @@ class NocTools:
         return {"entity": entity_id, "kpis": analytics.entity_kpis(self.s, entity_id)}
 
     def _find_kpi_anomalies(self) -> list[dict]:
-        return analytics.find_anomalies(self.s)[:25]
+        """Grouped by site (or the core) so one big outage can't crowd a second problem off the list."""
+        groups: dict[str, dict] = {}
+        for a in analytics.find_anomalies(self.s):
+            key = self.s.topology.site_of(a["entity"]) or a["entity"]
+            g = groups.setdefault(key, {"entity": key, "cells_affected": set(), "kpis": {}})
+            if a["entity"] != key:
+                g["cells_affected"].add(a["entity"])
+            k = g["kpis"].setdefault(a["kpi"], {"min_change_pct": a["change_pct"], "max_change_pct": a["change_pct"]})
+            k["min_change_pct"] = min(k["min_change_pct"], a["change_pct"])
+            k["max_change_pct"] = max(k["max_change_pct"], a["change_pct"])
+        out = [{**g, "cells_affected": sorted(g["cells_affected"])} for g in groups.values()]
+        out.sort(key=lambda g: -max(max(abs(v["min_change_pct"]), abs(v["max_change_pct"])) for v in g["kpis"].values()))
+        return out
 
     def _get_change_log(self) -> list[dict]:
         return self.s.change_log

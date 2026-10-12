@@ -39,19 +39,33 @@ def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float | 
     return (input_tokens * p_in + output_tokens * p_out) / 1_000_000
 
 SYSTEM_PROMPT = """You are a senior NOC (network operations centre) engineer for a 5G mobile network in Germany.
-An incident is in progress. Investigate it with the tools and find the single most likely root cause.
+An incident is in progress. Investigate it with the tools and find the root cause.
 
 The network: one packet core (CORE-FRA-UPF1), one aggregation router per city (AGG-<city>-01), four cell
 sites per router (SITE-<city>-00N) and three cells per site (SITE-<city>-00N-C1..C3).
 
-Fault categories: FIBER_CUT (aggregation uplink), POWER_OUTAGE (one site), CORE_CONGESTION (core UPF),
-CONFIG_CHANGE (a parameter change that degraded a site), RADIO_INTERFERENCE (one cell), or UNKNOWN.
+Fault categories: FIBER_CUT (aggregation uplink), POWER_OUTAGE (a site or an aggregation router),
+CORE_CONGESTION (core UPF), CONFIG_CHANGE (a parameter change that degraded a site), RADIO_INTERFERENCE
+(one cell), or UNKNOWN.
 
-Alarms can be noisy or missing, so check KPIs and the change log as well as alarms, and look at the
-runbooks when useful. Name the root-cause entity at the right level: the aggregation router for a fibre
-cut, the site for power or config problems, the core for congestion, the single cell for interference.
+Alarms can be noisy, misleading or missing, so check KPIs and the change log as well as alarms, and look
+at the runbooks when useful. Name the root-cause entity at the right level: the aggregation router for a
+fibre cut, the site or router that lost power, the site for config problems, the core for congestion,
+the single cell for interference.
+
+Usually there is one root cause, but occasionally two independent faults happen at once. Put the main
+one in the top-level fields and any other independent fault in additional_root_causes (leave it empty
+otherwise). Symptoms caused by another fault are not separate root causes, and deliberate, planned
+work is not a fault.
 Your tools are read-only. Recommended actions are proposals that a human engineer will approve.
 When you are confident, give your final answer in the required JSON format."""
+
+
+# Ablation: no domain hints (no fault guidance, no multi-fault/planned-work hints). Used to check
+# whether benchmark scores come from the model's reasoning or from hints in the prompt.
+MINIMAL_SYSTEM_PROMPT = """You are a NOC engineer for a 5G mobile network. Investigate the incident with the tools
+and report the root cause(s) in the required JSON format. Network elements: CORE-FRA-UPF1, aggregation routers
+AGG-<city>-01, sites SITE-<city>-00N, cells SITE-<city>-00N-C1..C3. Recommended actions need human approval."""
 
 
 @dataclass
@@ -67,11 +81,13 @@ class AgentResult:
 
 
 class NocAgent:
-    def __init__(self, model: str = DEFAULT_MODEL, effort: str = "medium", max_turns: int = 12, client=None):
+    def __init__(self, model: str = DEFAULT_MODEL, effort: str = "medium", max_turns: int = 12, client=None,
+                 minimal_prompt: bool = False):
         self.client = client or anthropic.Anthropic()
         self.model = model
         self.effort = effort
         self.max_turns = max_turns
+        self.system_prompt = MINIMAL_SYSTEM_PROMPT if minimal_prompt else SYSTEM_PROMPT
 
     def investigate(self, scenario: Scenario,
                     brief: str = "Multiple alarms and KPI degradation reported in the last hour. Find the root cause.") -> AgentResult:
@@ -89,7 +105,7 @@ class NocAgent:
             response = self.client.beta.messages.create(
                 model=self.model,
                 max_tokens=16000,
-                system=SYSTEM_PROMPT,
+                system=self.system_prompt,
                 tools=TOOL_DEFINITIONS,
                 messages=messages,
                 output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": RCA_SCHEMA}},

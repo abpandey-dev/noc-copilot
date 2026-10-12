@@ -1,5 +1,6 @@
 """Fault-injection simulator. Each scenario is a 2-hour window of alarms, KPIs and change-log entries
-with one injected root cause (the ground truth) plus realistic noise.
+with injected root cause(s) (the ground truth) plus realistic noise. `generate_scenario` builds the
+standard v0.1 incidents; `generate_hard_scenario` builds the v0.2 ones (multi-fault, cascades, decoys).
 
 Realism knobs that make the problem non-trivial:
 - Noise alarms (door open, high temperature, a cleared link flap) on unrelated sites.
@@ -48,6 +49,9 @@ class Scenario:
     kpis: dict[str, dict[str, list[float]]]  # entity -> kpi -> series (cells and core)
     change_log: list[dict]
     topology: Topology = field(repr=False)
+    # Every independent root cause as (fault_type, entity). One entry, except MULTI_FAULT incidents.
+    root_causes: list[tuple[str, str]] = field(default_factory=list)
+    category: str = ""
 
     @property
     def ground_truth(self) -> dict:
@@ -98,17 +102,15 @@ class _Builder:
             _apply(self.kpis[c]["prb_util_pct"], bucket, lambda v: 0.0)
 
 
-def generate_scenario(seed: int, fault_type: str | None = None, alarm_loss: bool | None = None) -> Scenario:
-    b = _Builder(seed)
+def _inject(b: _Builder, fault_type: str, alarm_loss: bool, avoid_aggs: frozenset[str] = frozenset()) -> str:
+    """Inject one fault and return its root-cause entity. `avoid_aggs` keeps a second fault in another region."""
     rng, topo = b.rng, b.topo
-    fault_type = fault_type or rng.choice(FAULT_TYPES)
-    alarm_loss = (rng.random() < 0.35) if alarm_loss is None else alarm_loss
-    sites = [n.id for n in topo.of_kind("site")]
+    sites = [n.id for n in topo.of_kind("site") if topo.agg_of(n.id) not in avoid_aggs]
+    aggs = [n.id for n in topo.of_kind("agg") if n.id not in avoid_aggs]
     F = FAULT_BUCKET
 
     if fault_type == "FIBER_CUT":
-        agg = rng.choice([n.id for n in topo.of_kind("agg")])
-        root = agg
+        agg = rng.choice(aggs)
         if not alarm_loss:
             b.alarm(agg, "LINK_DOWN", "CRITICAL", "Uplink ge-0/0/1 to core down (loss of signal)", F)
         for site in topo.descendants(agg, "site"):
@@ -116,10 +118,10 @@ def generate_scenario(seed: int, fault_type: str | None = None, alarm_loss: bool
             for cell in topo.descendants(site, "cell"):
                 b.alarm(cell, "CELL_OUT_OF_SERVICE", "CRITICAL", "Cell out of service", F, 2)
         b.cells_down(topo.descendants(agg, "cell"), F)
+        return agg
 
-    elif fault_type == "POWER_OUTAGE":
+    if fault_type == "POWER_OUTAGE":
         site = rng.choice(sites)
-        root = site
         if not alarm_loss:
             b.alarm(site, "MAINS_POWER_FAILURE", "MAJOR", "AC mains failure, running on battery", F - 7)
         b.alarm(site, "BATTERY_LOW", "MAJOR", "Battery voltage below 46V", F - 2)
@@ -127,9 +129,9 @@ def generate_scenario(seed: int, fault_type: str | None = None, alarm_loss: bool
         for cell in topo.descendants(site, "cell"):
             b.alarm(cell, "CELL_OUT_OF_SERVICE", "CRITICAL", "Cell out of service", F, 1)
         b.cells_down(topo.descendants(site, "cell"), F)
+        return site
 
-    elif fault_type == "CORE_CONGESTION":
-        root = CORE_ID
+    if fault_type == "CORE_CONGESTION":
         if not alarm_loss:
             b.alarm(CORE_ID, "UPF_CPU_HIGH", "MAJOR", "User-plane function CPU above 95%", F, 2)
         b.alarm(CORE_ID, "GTPU_PATH_DEGRADED", "MINOR", "GTP-U echo latency above threshold", F, 4)
@@ -139,10 +141,10 @@ def generate_scenario(seed: int, fault_type: str | None = None, alarm_loss: bool
         _apply(core["cpu_pct"], F, lambda v: min(99.0, v * 2.4))
         for cell in topo.of_kind("cell"):
             _apply(b.kpis[cell.id]["dl_throughput_mbps"], F, lambda v: v * 0.6)
+        return CORE_ID
 
-    elif fault_type == "CONFIG_CHANGE":
+    if fault_type == "CONFIG_CHANGE":
         site = rng.choice(sites)
-        root = site
         b.change_log.append({
             "time": _ts(F, -3), "entity": site, "author": "son-automation",
             "change": "Mobility parameter push: A3 handover offset 3 dB -> 12 dB on all cells",
@@ -151,33 +153,131 @@ def generate_scenario(seed: int, fault_type: str | None = None, alarm_loss: bool
             _apply(b.kpis[cell]["drop_call_rate_pct"], F, lambda v: v * 9)
             if not alarm_loss:
                 b.alarm(cell, "HANDOVER_FAILURE_RATE_HIGH", "MINOR", "Outgoing handover failure rate above 5%", F + 3)
+        return site
 
-    elif fault_type == "RADIO_INTERFERENCE":
+    if fault_type == "RADIO_INTERFERENCE":
         site = rng.choice(sites)
         cell = rng.choice(topo.descendants(site, "cell"))
-        root = cell
         if not alarm_loss:
             b.alarm(cell, "UL_INTERFERENCE_HIGH", "MAJOR", "Uplink interference above -95 dBm", F + 2)
         k = b.kpis[cell]
         _apply(k["ul_interference_dbm"], F, lambda v: v + 22)
         _apply(k["dl_throughput_mbps"], F, lambda v: v * 0.55)
         _apply(k["drop_call_rate_pct"], F, lambda v: v * 3)
+        return cell
+
+    raise ValueError(f"unknown fault type {fault_type!r}")
+
+
+def generate_scenario(seed: int, fault_type: str | None = None, alarm_loss: bool | None = None) -> Scenario:
+    """Standard (v0.1) incident: exactly one root cause."""
+    b = _Builder(seed)
+    rng = b.rng
+    fault_type = fault_type or rng.choice(FAULT_TYPES)
+    alarm_loss = (rng.random() < 0.35) if alarm_loss is None else alarm_loss
+    root = _inject(b, fault_type, alarm_loss)
+    _add_noise(b, [root])
+    return _finish(b, seed, [(fault_type, root)], alarm_loss, category=fault_type)
+
+
+# --- v0.2: harder incidents ---------------------------------------------------------------------
+
+HARD_CATEGORIES = ["MULTI_FAULT", "CASCADE_AGG_POWER", "CASCADE_CONFIG_LOAD", "DECOY_MAINTENANCE"]
+_LOCAL_FAULTS = ["FIBER_CUT", "POWER_OUTAGE", "CONFIG_CHANGE", "RADIO_INTERFERENCE"]
+
+
+def generate_hard_scenario(seed: int, category: str | None = None, alarm_loss: bool | None = None) -> Scenario:
+    """Harder incidents:
+
+    MULTI_FAULT          two independent faults in different regions at the same time (both must be found)
+    CASCADE_AGG_POWER    an aggregation router loses power; every site behind it drops, which looks like a fibre cut
+    CASCADE_CONFIG_LOAD  a coverage-reducing tilt push on one site overloads its neighbours, which raise the alarms
+    DECOY_MAINTENANCE    a planned-maintenance site fires CRITICAL outage alarms while the real fault is elsewhere
+    """
+    b = _Builder(seed + 10_000)  # separate random stream from the standard suite
+    rng, topo = b.rng, b.topo
+    category = category or rng.choice(HARD_CATEGORIES)
+    alarm_loss = (rng.random() < 0.5) if alarm_loss is None else alarm_loss
+    F = FAULT_BUCKET
+    extra_quiet: list[str] = []
+
+    if category == "MULTI_FAULT":
+        first, second = rng.sample(_LOCAL_FAULTS, 2)
+        r1 = _inject(b, first, alarm_loss)
+        r2 = _inject(b, second, alarm_loss, avoid_aggs=frozenset({topo.agg_of(r1)}))
+        truth = [(first, r1), (second, r2)]
+
+    elif category == "CASCADE_AGG_POWER":
+        agg = rng.choice([n.id for n in topo.of_kind("agg")])
+        if not alarm_loss:
+            b.alarm(agg, "MAINS_POWER_FAILURE", "MAJOR", "AC mains failure, running on battery", F - 9)
+        b.alarm(agg, "BATTERY_LOW", "MAJOR", "Battery voltage below 46V", F - 3)
+        b.alarm(CORE_ID, "PEER_UNREACHABLE", "MAJOR", f"BFD session to {agg} down", F)
+        for site in topo.descendants(agg, "site"):
+            b.alarm(site, "NG_LINK_FAILURE", "MAJOR", "NG interface to core unreachable", F, 1)
+            for cell in topo.descendants(site, "cell"):
+                b.alarm(cell, "CELL_OUT_OF_SERVICE", "CRITICAL", "Cell out of service", F, 2)
+        b.cells_down(topo.descendants(agg, "cell"), F)
+        truth = [("POWER_OUTAGE", agg)]
+
+    elif category == "CASCADE_CONFIG_LOAD":
+        site = rng.choice([n.id for n in topo.of_kind("site")])
+        b.change_log.append({
+            "time": _ts(F, -3), "entity": site, "author": "son-automation",
+            "change": "Antenna electrical tilt 2 deg -> 9 deg on all cells (coverage optimisation)",
+        })
+        for cell in topo.descendants(site, "cell"):
+            _apply(b.kpis[cell]["prb_util_pct"], F, lambda v: v * 0.3)
+            _apply(b.kpis[cell]["dl_throughput_mbps"], F, lambda v: v * 0.5)
+        agg = topo.agg_of(site)
+        for neighbour in topo.descendants(agg, "site"):
+            if neighbour == site:
+                continue
+            for cell in topo.descendants(neighbour, "cell"):
+                _apply(b.kpis[cell]["prb_util_pct"], F, lambda v: min(98.0, v * 1.9))
+                _apply(b.kpis[cell]["dl_throughput_mbps"], F, lambda v: v * 0.7)
+                b.alarm(cell, "PRB_UTILISATION_HIGH", "MINOR", "Downlink PRB utilisation above 80%", F + 4)
+        truth = [("CONFIG_CHANGE", site)]
+
+    elif category == "DECOY_MAINTENANCE":
+        real = rng.choice(["POWER_OUTAGE", "CONFIG_CHANGE", "RADIO_INTERFERENCE", "CORE_CONGESTION"])
+        root = _inject(b, real, alarm_loss)
+        busy_aggs = {topo.agg_of(root)} if root != CORE_ID else set()
+        decoy = rng.choice([n.id for n in topo.of_kind("site") if topo.agg_of(n.id) not in busy_aggs])
+        D = 9  # maintenance starts 10:45
+        b.change_log.append({
+            "time": _ts(D, -5), "entity": decoy, "author": "noc-planning",
+            "change": "Planned maintenance CRQ-4471: all cells locked for antenna swap, 10:45-12:30",
+        })
+        for cell in topo.descendants(decoy, "cell"):
+            b.alarm(cell, "CELL_OUT_OF_SERVICE", "CRITICAL", "Cell out of service", D, 1)
+        b.cells_down(topo.descendants(decoy, "cell"), D)
+        truth = [(real, root)]
+        extra_quiet.append(decoy)
 
     else:
-        raise ValueError(f"unknown fault type {fault_type!r}")
+        raise ValueError(f"unknown hard category {category!r}")
 
-    _add_noise(b, root)
+    _add_noise(b, [e for _, e in truth] + extra_quiet)
+    return _finish(b, seed, truth, alarm_loss, category=category)
+
+
+def _finish(b: _Builder, seed: int, truth: list[tuple[str, str]], alarm_loss: bool, category: str) -> Scenario:
     b.alarms.sort(key=lambda a: a["time"])
     for i, a in enumerate(b.alarms, 1):
         a["id"] = f"ALM-{i:04d}"
-    return Scenario(seed=seed, fault_type=fault_type, root_cause=root, alarm_loss=alarm_loss,
-                    alarms=b.alarms, kpis=b.kpis, change_log=b.change_log, topology=topo)
+    return Scenario(seed=seed, fault_type=truth[0][0], root_cause=truth[0][1], alarm_loss=alarm_loss,
+                    alarms=b.alarms, kpis=b.kpis, change_log=b.change_log, topology=b.topo,
+                    root_causes=truth, category=category)
 
 
-def _add_noise(b: _Builder, root: str) -> None:
+def _add_noise(b: _Builder, busy: list[str]) -> None:
+    """Noise on sites unrelated to any root cause (or decoy) in `busy`."""
     rng, topo = b.rng, b.topo
-    root_site = topo.site_of(root) if root in topo and topo.get(root).kind in ("site", "cell") else None
-    quiet_sites = [n.id for n in topo.of_kind("site") if n.id != root_site and topo.agg_of(n.id) != root]
+    busy_sites = {topo.site_of(e) for e in busy if e in topo and topo.get(e).kind in ("site", "cell")}
+    busy_aggs = {e for e in busy if e in topo and topo.get(e).kind == "agg"}
+    quiet_sites = [n.id for n in topo.of_kind("site")
+                   if n.id not in busy_sites and topo.agg_of(n.id) not in busy_aggs]
     noise_sites = rng.sample(quiet_sites, 3)
     b.alarm(noise_sites[0], "DOOR_OPEN", "WARNING", "Cabinet door open", rng.randint(2, 20))
     b.alarm(noise_sites[1], "HIGH_TEMPERATURE", "MINOR", "Cabinet temperature 41C", rng.randint(2, 20))
