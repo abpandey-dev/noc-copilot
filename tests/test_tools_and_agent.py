@@ -101,3 +101,12 @@ def test_agent_reports_refusal_and_turn_limit():
     loop = [resp([tool_use(f"t{i}", "get_change_log", {})], "tool_use") for i in range(3)]
     stuck = NocAgent(client=FakeClient(loop), max_turns=3).investigate(s)
     assert stuck.rca is None and "No final answer" in stuck.error
+
+
+def test_haiku_skips_fallbacks_and_cost_is_estimated():
+    s = generate_scenario(2, "POWER_OUTAGE", alarm_loss=True)
+    client = FakeClient([resp([NS(type="text", text=json.dumps(FINAL))], "end_turn")])
+    r = NocAgent(model="claude-haiku-5-5", client=client).investigate(s)
+    call = client.calls[0]
+    assert "fallbacks" not in call and "betas" not in call  # Haiku 5.5 has no server-side fallback
+    assert r.cost_usd == (100 * 0.10 + 20 * 0.50) / 1_000_000
