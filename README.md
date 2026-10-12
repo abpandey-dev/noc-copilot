@@ -58,7 +58,30 @@ A case is correct only if **both** the fault type and the exact root-cause entit
 
 **What this shows:** the rulebook is perfect when every alarm arrives and collapses when the key alarm is missing. Both agents close that gap by working from KPIs, topology and the change log. In about 3 turns and 5-7 tool calls they find silent failures such as a bad automated config push that raised no alarm at all. The small model matches the large one here at about 1/35 of the cost.
 
-**Honest limitation:** 100% means this benchmark is now *too easy* for current models: each incident has one clean root cause. The next version adds harder cases (two simultaneous faults, cascading failures, misleading alarms) to find where agents actually break.
+**Honest limitation:** 100% means this standard suite is *too easy* for current models: each incident has one clean root cause. That's why v0.2 adds a hard suite (below).
+
+### v0.2 hard suite: multi-fault, cascades and decoys
+
+Four incident types built to trap rulebooks *and* hasty agents (`noc benchmark --suite hard`):
+
+| Category | The trap |
+|---|---|
+| `MULTI_FAULT` | Two independent faults in different cities at once. **Both** must be found; naming only one, or adding a phantom one, scores zero. |
+| `CASCADE_AGG_POWER` | An aggregation router loses power: every site behind it drops, which looks exactly like a fibre cut. |
+| `CASCADE_CONFIG_LOAD` | A coverage-reducing antenna-tilt push on one site sends users to neighbouring sites, so the congestion alarms fire on the *wrong* sites. |
+| `DECOY_MAINTENANCE` | A site locked for planned maintenance fires CRITICAL outage alarms while the real fault is elsewhere. |
+
+Results on 20 hard incidents (5 per category; half with the primary alarm missing):
+
+| Method | Overall | Multi-fault | Router power | Config → load | Maintenance decoy | Alarms present | Primary alarm missing | Cost / incident |
+|---|---|---|---|---|---|---|---|---|
+| Alarm-rule baseline | **30%** | 0% | 60% | 0% | 60% | 50% | 0% | $0 |
+| Claude Haiku 5.5, minimal prompt | **95%** | 100% | 100% | 100% | 80% | 100% | 88% | $0.0029 |
+| Claude Haiku 5.5, full NOC prompt | **100%** | 100% | 100% | 100% | 100% | 100% | 100% | $0.0027 |
+
+**Prompt ablation.** With a *minimal* prompt (role, network naming and output format only), Haiku made the classic NOC mistake on one maintenance-decoy incident: it found the real interference fault but **also blamed the site that was down for planned maintenance**. The full prompt states one line of operational knowledge, "deliberate, planned work is not a fault", and that fixed it. Domain knowledge in the prompt is cheap and it measurably matters.
+
+**Still to do:** 100% on the hard suite with the full prompt means the next frontier is noisier data: alarm storms, partially missing KPIs, faults that start at different times, and subtler degradations close to normal variation.
 
 <details>
 <summary>Example: Haiku investigating a silent config-change fault (no alarms raised)</summary>
@@ -96,7 +119,9 @@ pip install -e ".[dev]"
 noc simulate --seed 9                    # look at an incident (no answer shown)
 noc triage --seed 9 --method baseline    # rule-based RCA
 noc benchmark --method baseline --n 20   # score the baseline
-pytest -q                                # 71 tests, no API key needed
+noc benchmark --method baseline --suite hard --n 20   # v0.2 hard suite
+noc simulate --seed 6 --category CASCADE_AGG_POWER --reveal
+pytest -q                                # 120 tests, no API key needed
 ```
 
 With Claude (needs `ANTHROPIC_API_KEY` or `ant auth login`; real calls cost money, so start with one incident):
@@ -144,13 +169,14 @@ src/noc_copilot/
   benchmark.py    # scoring and reports
   cli.py          # `noc` command
   runbooks/       # NOC runbooks the agent can search
-tests/            # 71 tests incl. agent loop with a scripted fake client
+tests/            # 120 tests incl. agent loop with a scripted fake client
 ```
 
 ## Roadmap
 
 - [x] Publish Claude benchmark numbers and cost per incident (Haiku 5.5 and Opus 5.5)
-- [ ] Harder benchmark: multi-fault incidents (two problems at once), cascading failures, misleading alarms
+- [x] Hard suite (v0.2): multi-fault incidents, cascading failures, maintenance decoys + prompt ablation
+- [ ] v0.3: alarm storms, missing KPIs, staggered fault start times, subtle degradations
 - [ ] Streaming alarms (Kafka) instead of a fixed incident window
 - [ ] O-RAN / 3GPP-style KPI names and a larger topology
 - [ ] Web dashboard: incident timeline, topology map, agent trace
