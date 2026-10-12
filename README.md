@@ -46,14 +46,45 @@ flowchart LR
 
 ## Results
 
-Benchmark on 20 incidents (4 per fault type; half with the primary alarm missing). A case is correct only if **both** the fault type and the exact root-cause entity match.
+A case is correct only if **both** the fault type and the exact root-cause entity match. Incidents cover all 5 fault types; half have the primary alarm missing. Measured on 12 Oct 2026, effort `medium`:
 
-| Method | Overall | Alarms present | Primary alarm missing |
-|---|---|---|---|
-| Alarm-rule baseline | **60%** | 100% | 20% |
-| Claude agent | *run `noc benchmark --method claude` (see below)* | | |
+| Method | Incidents | Overall | Alarms present | Primary alarm missing | Cost / incident | Time / incident |
+|---|---|---|---|---|---|---|
+| Alarm-rule baseline | 20 | **60%** | 100% | 20% | $0 | <1 ms |
+| Claude Haiku 5.5 agent | 20 | **100%** | 100% | 100% | **$0.0023** | 11 s |
+| Claude Opus 5.5 agent | 10 | **100%** | 100% | 100% | $0.080 | 17 s |
 
-The baseline is perfect when every alarm arrives and collapses when the key alarm is missing. That gap is what the agent has to close: with no alarm, it has to work from KPIs, topology and the change log.
+*Costs are computed from token usage at list prices. A full 20-incident run on Haiku costs about 5 cents.*
+
+**What this shows:** the rulebook is perfect when every alarm arrives and collapses when the key alarm is missing. Both agents close that gap by working from KPIs, topology and the change log. In about 3 turns and 5-7 tool calls they find silent failures such as a bad automated config push that raised no alarm at all. The small model matches the large one here at about 1/35 of the cost.
+
+**Honest limitation:** 100% means this benchmark is now *too easy* for current models: each incident has one clean root cause. The next version adds harder cases (two simultaneous faults, cascading failures, misleading alarms) to find where agents actually break.
+
+<details>
+<summary>Example: Haiku investigating a silent config-change fault (no alarms raised)</summary>
+
+```text
+Audit trail:
+  turn 1: list_alarms({"min_severity": "WARNING"})
+  turn 1: find_kpi_anomalies({})
+  turn 1: get_change_log({})
+  turn 2: get_kpis({"entity_id": "SITE-HAM-002"})
+  turn 2: get_topology({"entity_id": "SITE-HAM-002"})
+  turn 2: search_runbooks({"query": "A3 handover offset mobility parameter change drop call rate"})
+
+3 turns, 6 tool calls, 9788+1583 tokens, 13.97s, $0.0018
+
+Root cause : CONFIG_CHANGE at SITE-HAM-002  (confidence: high)
+  evidence : Change log: 10:57Z SITE-HAM-002, son-automation, A3 handover offset 3 dB -> 12 dB on all cells.
+  evidence : drop_call_rate_pct up ~840% on all three cells; availability, throughput, interference unchanged.
+  evidence : No alarms were raised for HAM-002 at WARNING or above, so the degradation is silent.
+  evidence : SITE-BER-002 neighbour-list change has no associated KPI anomaly, so it is discounted.
+  PROPOSED [low risk, needs approval]: Roll back the A3 handover offset on SITE-HAM-002 to 3 dB.
+  PROPOSED [low risk, needs approval]: Pause the son-automation mobility policy until reviewed.
+
+Ground truth: CONFIG_CHANGE at SITE-HAM-002 -> CORRECT
+```
+</details>
 
 ## Quick start
 
@@ -65,14 +96,14 @@ pip install -e ".[dev]"
 noc simulate --seed 9                    # look at an incident (no answer shown)
 noc triage --seed 9 --method baseline    # rule-based RCA
 noc benchmark --method baseline --n 20   # score the baseline
-pytest -q                                # 70 tests, no API key needed
+pytest -q                                # 71 tests, no API key needed
 ```
 
 With Claude (needs `ANTHROPIC_API_KEY` or `ant auth login`; real calls cost money, so start with one incident):
 
 ```bash
 noc triage --seed 9 --method claude --trace
-noc benchmark --method claude --n 20 --effort medium
+noc benchmark --method claude --model claude-haiku-5-5 --n 20   # ~5 cents
 ```
 
 Example incident (`noc simulate --seed 4`): core congestion with noise around it:
@@ -113,13 +144,13 @@ src/noc_copilot/
   benchmark.py    # scoring and reports
   cli.py          # `noc` command
   runbooks/       # NOC runbooks the agent can search
-tests/            # 70 tests incl. agent loop with a scripted fake client
+tests/            # 71 tests incl. agent loop with a scripted fake client
 ```
 
 ## Roadmap
 
-- [ ] Publish Claude benchmark numbers (and cost per incident) across effort levels
-- [ ] Multi-fault incidents (two problems at once) and cascading failures
+- [x] Publish Claude benchmark numbers and cost per incident (Haiku 5.5 and Opus 5.5)
+- [ ] Harder benchmark: multi-fault incidents (two problems at once), cascading failures, misleading alarms
 - [ ] Streaming alarms (Kafka) instead of a fixed incident window
 - [ ] O-RAN / 3GPP-style KPI names and a larger topology
 - [ ] Web dashboard: incident timeline, topology map, agent trace
