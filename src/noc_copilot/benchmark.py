@@ -13,10 +13,11 @@ from typing import Callable
 from pydantic import BaseModel
 
 from noc_copilot.models import RCA
-from noc_copilot.simulator import (FAULT_TYPES, HARD_CATEGORIES, Scenario, generate_hard_scenario,
-                                   generate_scenario)
+from noc_copilot.simulator import (FAULT_TYPES, HARD_CATEGORIES, MESSY_CATEGORIES, Scenario,
+                                   generate_hard_scenario, generate_messy_scenario, generate_scenario)
 
-SUITES = {"standard": FAULT_TYPES, "hard": HARD_CATEGORIES}
+SUITES = {"standard": FAULT_TYPES, "hard": HARD_CATEGORIES, "messy": MESSY_CATEGORIES}
+GENERATORS = {"standard": generate_scenario, "hard": generate_hard_scenario, "messy": generate_messy_scenario}
 
 
 class CaseScore(BaseModel):
@@ -64,7 +65,7 @@ class BenchmarkResult(BaseModel):
 def scenarios(n: int, start_seed: int = 1, suite: str = "standard") -> list[Scenario]:
     """Balanced set: categories rotate, and every other pass drops the primary alarm."""
     cats = SUITES[suite]
-    gen = generate_scenario if suite == "standard" else generate_hard_scenario
+    gen = GENERATORS[suite]
     out = []
     for i in range(n):
         alarm_loss = (i // len(cats)) % 2 == 1

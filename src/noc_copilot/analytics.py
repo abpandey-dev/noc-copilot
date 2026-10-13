@@ -16,22 +16,37 @@ BASELINE_WINDOW = slice(0, 8)  # first 40 minutes = "normal"
 RECENT_WINDOW = slice(-6, None)  # last 30 minutes
 
 
-def kpi_summary(series: list[float]) -> dict:
-    base, recent = series[BASELINE_WINDOW], series[RECENT_WINDOW]
+def kpi_summary(series: list[float | None]) -> dict:
+    """Baseline vs recent window. Missing samples (None) are skipped and reported, never read as zero:
+    a cell that stopped reporting is not the same as a cell reporting 0% availability."""
+    base = [v for v in series[BASELINE_WINDOW] if v is not None]
+    recent_all = series[RECENT_WINDOW]
+    recent = [v for v in recent_all if v is not None]
+    missing_pct = round(100 * (1 - len(recent) / len(recent_all)))
+    if not base or not recent:
+        return {"baseline_mean": round(mean(base), 2) if base else None, "recent_mean": None, "change_pct": None,
+                "anomaly": False, "missing_recent_pct": missing_pct, "no_recent_data": not recent}
     b_mean, r_mean = mean(base), mean(recent)
     spread = max(pstdev(base), abs(b_mean) * 0.01, 1e-6)
     z = (r_mean - b_mean) / spread
     change_pct = (r_mean - b_mean) / abs(b_mean) * 100 if b_mean else 0.0
-    return {
+    out = {
         "baseline_mean": round(b_mean, 2),
         "recent_mean": round(r_mean, 2),
         "change_pct": round(change_pct, 1),
         "anomaly": abs(z) > 6 and abs(change_pct) > 15,
     }
+    if missing_pct:
+        out["missing_recent_pct"] = missing_pct
+    return out
 
 
-def aggregate(series_list: list[list[float]]) -> list[float]:
-    return [round(mean(vals), 3) for vals in zip(*series_list)]
+def aggregate(series_list: list[list[float | None]]) -> list[float | None]:
+    out = []
+    for vals in zip(*series_list):
+        present = [v for v in vals if v is not None]
+        out.append(round(mean(present), 3) if present else None)
+    return out
 
 
 def entity_kpis(s: Scenario, entity: str) -> dict[str, dict]:
@@ -50,9 +65,9 @@ def find_anomalies(s: Scenario) -> list[dict]:
     for entity, kpis in s.kpis.items():
         for kpi, series in kpis.items():
             summ = kpi_summary(series)
-            if summ["anomaly"]:
+            if summ["anomaly"] or summ.get("no_recent_data"):
                 out.append({"entity": entity, "kpi": kpi, **summ})
-    out.sort(key=lambda r: -abs(r["change_pct"]))
+    out.sort(key=lambda r: -abs(r["change_pct"]) if r["change_pct"] is not None else -100.0)
     return out
 
 

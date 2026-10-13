@@ -1,6 +1,7 @@
 """Fault-injection simulator. Each scenario is a 2-hour window of alarms, KPIs and change-log entries
 with injected root cause(s) (the ground truth) plus realistic noise. `generate_scenario` builds the
-standard v0.1 incidents; `generate_hard_scenario` builds the v0.2 ones (multi-fault, cascades, decoys).
+standard v0.1 incidents; `generate_hard_scenario` builds the v0.2 ones (multi-fault, cascades, decoys);
+`generate_messy_scenario` builds the v0.3 ones (alarm storms, telemetry gaps, staggered faults, busy hour).
 
 Realism knobs that make the problem non-trivial:
 - Noise alarms (door open, high temperature, a cleared link flap) on unrelated sites.
@@ -46,7 +47,7 @@ class Scenario:
     root_cause: str
     alarm_loss: bool
     alarms: list[dict]
-    kpis: dict[str, dict[str, list[float]]]  # entity -> kpi -> series (cells and core)
+    kpis: dict[str, dict[str, list[float | None]]]  # entity -> kpi -> series (cells and core); None = no sample
     change_log: list[dict]
     topology: Topology = field(repr=False)
     # Every independent root cause as (fault_type, entity). One entry, except MULTI_FAULT incidents.
@@ -101,13 +102,22 @@ class _Builder:
             _apply(self.kpis[c]["dl_throughput_mbps"], bucket, lambda v: 0.0)
             _apply(self.kpis[c]["prb_util_pct"], bucket, lambda v: 0.0)
 
+    def cells_silent(self, cells: list[str], bucket: int, end: int = N_BUCKETS) -> None:
+        """No performance data arrives for these cells: samples are missing (None), not zero."""
+        for c in cells:
+            for series in self.kpis[c].values():
+                for i in range(bucket, end):
+                    series[i] = None
 
-def _inject(b: _Builder, fault_type: str, alarm_loss: bool, avoid_aggs: frozenset[str] = frozenset()) -> str:
-    """Inject one fault and return its root-cause entity. `avoid_aggs` keeps a second fault in another region."""
+
+def _inject(b: _Builder, fault_type: str, alarm_loss: bool, avoid_aggs: frozenset[str] = frozenset(),
+            start: int = FAULT_BUCKET) -> str:
+    """Inject one fault and return its root-cause entity. `avoid_aggs` keeps a second fault in another region;
+    `start` is the 5-minute bucket the fault begins in."""
     rng, topo = b.rng, b.topo
     sites = [n.id for n in topo.of_kind("site") if topo.agg_of(n.id) not in avoid_aggs]
     aggs = [n.id for n in topo.of_kind("agg") if n.id not in avoid_aggs]
-    F = FAULT_BUCKET
+    F = start
 
     if fault_type == "FIBER_CUT":
         agg = rng.choice(aggs)
@@ -257,6 +267,112 @@ def generate_hard_scenario(seed: int, category: str | None = None, alarm_loss: b
 
     else:
         raise ValueError(f"unknown hard category {category!r}")
+
+    _add_noise(b, [e for _, e in truth] + extra_quiet)
+    return _finish(b, seed, truth, alarm_loss, category=category)
+
+
+# --- v0.3: messy telemetry ----------------------------------------------------------------------
+
+MESSY_CATEGORIES = ["ALARM_STORM", "TELEMETRY_GAP", "STAGGERED_MULTI", "BUSY_HOUR_SUBTLE"]
+
+
+def generate_messy_scenario(seed: int, category: str | None = None, alarm_loss: bool | None = None) -> Scenario:
+    """Incidents where the data itself is messy, not just the faults:
+
+    ALARM_STORM       one real fault under ~80 alarms: a microwave link flapping every couple of minutes,
+                      a heatwave raising temperature warnings on most sites, and the real fault's alarms re-raised
+    TELEMETRY_GAP     the faulty site stops reporting KPIs (missing samples, not zeros), while a healthy site in
+                      another region has a performance-data collection gap that is NOT an outage
+    STAGGERED_MULTI   two independent faults 60 minutes apart; the first starts inside the "normal" baseline
+                      window, so before/after KPI summaries understate it
+    BUSY_HOUR_SUBTLE  evening traffic ramp flags every cell in the network; the real fault is a small
+                      degradation on one site hidden among them
+    """
+    b = _Builder(seed + 20_000)  # separate random stream from the v0.1 and v0.2 suites
+    rng, topo = b.rng, b.topo
+    category = category or rng.choice(MESSY_CATEGORIES)
+    alarm_loss = (rng.random() < 0.5) if alarm_loss is None else alarm_loss
+    F = FAULT_BUCKET
+    extra_quiet: list[str] = []
+
+    if category == "ALARM_STORM":
+        fault = rng.choice(FAULT_TYPES)
+        root = _inject(b, fault, alarm_loss)
+        truth = [(fault, root)]
+        flapper = rng.choice([n.id for n in topo.of_kind("site")
+                              if n.id != topo.site_of(root) and topo.agg_of(n.id) != root])
+        for i in range(0, N_BUCKETS * BUCKET_MIN - 4, 3):  # every 3 minutes, all auto-recovered
+            b.alarm(flapper, "LINK_FLAP", "MINOR", "Microwave link flapped (auto-recovered in <1s)",
+                    i // BUCKET_MIN, i % BUCKET_MIN, status="CLEARED")
+        for site in rng.sample([n.id for n in topo.of_kind("site")], 12):
+            b.alarm(site, "HIGH_TEMPERATURE", "WARNING", f"Cabinet temperature {rng.randint(38, 44)}C",
+                    rng.randint(0, 22), rng.randint(0, 4))
+        for a in [a for a in b.alarms if a["type"] != "LINK_FLAP" and "temperature" not in a["text"]][:6]:
+            later = datetime.strptime(a["time"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) + timedelta(minutes=17)
+            b.alarms.append({**a, "time": later.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                             "text": a["text"] + " (re-raised by EMS resync)"})
+        extra_quiet.append(flapper)
+
+    elif category == "TELEMETRY_GAP":
+        fault = rng.choice(["POWER_OUTAGE", "FIBER_CUT"])
+        root = _inject(b, fault, alarm_loss)
+        dead_cells = topo.descendants(root, "cell")
+        b.cells_silent(dead_cells, F)  # a dead site sends no counters at all
+        truth = [(fault, root)]
+        busy_aggs = {topo.agg_of(root)}
+        gap_site = rng.choice([n.id for n in topo.of_kind("site") if topo.agg_of(n.id) not in busy_aggs])
+        b.cells_silent(topo.descendants(gap_site, "cell"), 13)
+        b.alarm(gap_site, "PM_FILE_MISSING", "WARNING", "Performance counter upload to OSS failed (SFTP timeout)",
+                14, 2)
+        b.change_log.append({"time": _ts(12, 4), "entity": "OSS-MEDIATION-01", "author": "oss-ops",
+                             "change": f"Mediation server patch; PM collection for {gap_site} paused until 13:00"})
+        extra_quiet.append(gap_site)
+
+    elif category == "STAGGERED_MULTI":
+        # The early fault's KPIs leak into the baseline window, so the anomaly scan can miss it. Only use faults
+        # that always leave other evidence (secondary alarms, a change-log entry) to keep the case solvable.
+        first = rng.choice(["FIBER_CUT", "CONFIG_CHANGE"])
+        second = rng.choice([f for f in _LOCAL_FAULTS if f != first])
+        r1 = _inject(b, first, alarm_loss, start=5)  # 10:25, inside the 10:00-10:40 baseline window
+        r2 = _inject(b, second, alarm_loss, avoid_aggs=frozenset({topo.agg_of(r1)}), start=17)  # 11:25
+        truth = [(first, r1), (second, r2)]
+
+    elif category == "BUSY_HOUR_SUBTLE":
+        # Evening ramp on every cell: more load, a little less throughput per user. Not a fault.
+        for cell in topo.of_kind("cell"):
+            k = b.kpis[cell.id]
+            for i in range(8, N_BUCKETS):
+                ramp = (i - 7) / (N_BUCKETS - 8)
+                k["prb_util_pct"][i] = round(min(95.0, k["prb_util_pct"][i] * (1 + 0.45 * ramp)), 3)
+                k["dl_throughput_mbps"][i] = round(k["dl_throughput_mbps"][i] * (1 - 0.12 * ramp), 3)
+                k["drop_call_rate_pct"][i] = round(k["drop_call_rate_pct"][i] * (1 + 0.08 * ramp), 3)
+        fault = rng.choice(["CONFIG_CHANGE", "RADIO_INTERFERENCE"])
+        site = rng.choice([n.id for n in topo.of_kind("site")])
+        if fault == "CONFIG_CHANGE":
+            b.change_log.append({
+                "time": _ts(F, -3), "entity": site, "author": "son-automation",
+                "change": "Mobility parameter push: A3 handover offset 3 dB -> 5 dB on all cells",
+            })
+            for cell in topo.descendants(site, "cell"):
+                _apply(b.kpis[cell]["drop_call_rate_pct"], F, lambda v: v * 1.9)
+            if not alarm_loss:
+                b.alarm(site + "-C1", "HANDOVER_FAILURE_RATE_HIGH", "MINOR", "Outgoing handover failure rate above 5%",
+                        F + 7)
+            root = site
+        else:
+            cell = rng.choice(topo.descendants(site, "cell"))
+            k = b.kpis[cell]
+            _apply(k["ul_interference_dbm"], F, lambda v: v + 18)
+            _apply(k["dl_throughput_mbps"], F, lambda v: v * 0.8)
+            _apply(k["drop_call_rate_pct"], F, lambda v: v * 1.6)
+            if not alarm_loss:
+                b.alarm(cell, "UL_INTERFERENCE_HIGH", "MAJOR", "Uplink interference above -95 dBm", F + 2)
+            root = cell
+        truth = [(fault, root)]
+
+    else:
+        raise ValueError(f"unknown messy category {category!r}")
 
     _add_noise(b, [e for _, e in truth] + extra_quiet)
     return _finish(b, seed, truth, alarm_loss, category=category)

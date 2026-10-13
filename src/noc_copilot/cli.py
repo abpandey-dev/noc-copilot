@@ -4,6 +4,7 @@
   noc triage --seed 3 --method baseline|claude
   noc benchmark --method baseline|claude --n 20 [--suite standard|hard]
   noc simulate --seed 3 --category MULTI_FAULT --reveal   (v0.2 hard incidents)
+  noc simulate --seed 3 --category TELEMETRY_GAP --reveal (v0.3 messy telemetry)
 """
 
 from __future__ import annotations
@@ -16,8 +17,8 @@ from pathlib import Path
 from noc_copilot import analytics
 from noc_copilot.benchmark import run_benchmark, to_markdown
 from noc_copilot.models import RCA
-from noc_copilot.simulator import (FAULT_TYPES, HARD_CATEGORIES, Scenario, generate_hard_scenario,
-                                   generate_scenario)
+from noc_copilot.simulator import (FAULT_TYPES, HARD_CATEGORIES, MESSY_CATEGORIES, Scenario,
+                                   generate_hard_scenario, generate_messy_scenario, generate_scenario)
 
 
 def _baseline(s: Scenario) -> tuple[RCA | None, str | None]:
@@ -57,6 +58,8 @@ def _print_rca(rca: RCA | None) -> None:
 
 
 def _make_scenario(args) -> Scenario:
+    if args.category in MESSY_CATEGORIES:
+        return generate_messy_scenario(args.seed, category=args.category)
     if args.category:
         return generate_hard_scenario(args.seed, category=args.category)
     return generate_scenario(args.seed, fault_type=args.fault)
@@ -69,13 +72,15 @@ def main(argv: list[str] | None = None) -> int:
     sim = sub.add_parser("simulate", help="Show a simulated incident")
     sim.add_argument("--seed", type=int, default=1)
     sim.add_argument("--fault", choices=FAULT_TYPES, help="standard suite: fault type")
-    sim.add_argument("--category", choices=HARD_CATEGORIES, help="hard suite: incident category")
+    sim.add_argument("--category", choices=HARD_CATEGORIES + MESSY_CATEGORIES,
+                     help="hard/messy suite: incident category")
     sim.add_argument("--reveal", action="store_true", help="Also print the ground truth")
 
     tri = sub.add_parser("triage", help="Run root-cause analysis on one incident")
     tri.add_argument("--seed", type=int, default=1)
     tri.add_argument("--fault", choices=FAULT_TYPES, help="standard suite: fault type")
-    tri.add_argument("--category", choices=HARD_CATEGORIES, help="hard suite: incident category")
+    tri.add_argument("--category", choices=HARD_CATEGORIES + MESSY_CATEGORIES,
+                     help="hard/messy suite: incident category")
     tri.add_argument("--method", choices=["baseline", "claude"], default="baseline")
     tri.add_argument("--model", default="claude-opus-5-5")
     tri.add_argument("--effort", default="medium", choices=["low", "medium", "high", "xhigh", "max"])
@@ -84,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     bench = sub.add_parser("benchmark", help="Score a method over many incidents")
     bench.add_argument("--method", choices=["baseline", "claude"], default="baseline")
     bench.add_argument("--n", type=int, default=20)
-    bench.add_argument("--suite", choices=["standard", "hard"], default="standard")
+    bench.add_argument("--suite", choices=["standard", "hard", "messy"], default="standard")
     bench.add_argument("--minimal-prompt", action="store_true",
                        help="Ablation: system prompt without domain hints")
     bench.add_argument("--model", default="claude-opus-5-5")
@@ -103,6 +108,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{c['time']}  {c['entity']:<18} {c['author']:<15} {c['change']}")
         print("\nTop KPI anomalies:")
         for a in analytics.find_anomalies(s)[:8]:
+            if a.get("no_recent_data"):
+                print(f"  {a['entity']:<18} {a['kpi']:<22} {str(a['baseline_mean']):>8} -> no data received")
+                continue
             print(f"  {a['entity']:<18} {a['kpi']:<22} {a['baseline_mean']:>8} -> {a['recent_mean']:<8} ({a['change_pct']:+}%)")
         if args.reveal:
             print(f"\nGround truth ({s.category}): {s.root_causes}, alarm_loss={s.alarm_loss}")
