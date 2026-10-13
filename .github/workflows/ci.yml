@@ -20,7 +20,10 @@ jobs:
       - name: Tests (no API calls)
         run: pytest -q
       - name: Baseline benchmark
-        run: noc benchmark --method baseline --n 20
+        run: |
+          noc benchmark --method baseline --n 20
+          noc benchmark --method baseline --suite hard --n 20
+          noc benchmark --method baseline --suite messy --n 20
       - uses: actions/upload-artifact@v4
         with:
           name: benchmark-${{ matrix.python-version }}
