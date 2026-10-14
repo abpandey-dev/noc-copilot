@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" width="1200" height="700" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+<rect width="1200" height="700" fill="#FFFFFF"/>
+<text x="40" y="52" font-size="28" fill="#0F172A" font-weight="700">NOC Copilot: what we get from it</text>
+<text x="40" y="80" font-size="15" fill="#475569">Measured on synthetic incidents with known root causes · real Claude API runs, Oct 2026</text>
+<rect x="24" y="104" width="740" height="380" rx="14" fill="#F8FAFC" stroke="#E2E8F0"/>
+<text x="44" y="136" font-size="16" fill="#0F172A" font-weight="700">Accuracy: alarm rules vs Claude agent</text>
+<text x="44" y="158" font-size="12" fill="#64748B">20 incidents per suite · Claude Haiku 5.5 · full NOC prompt</text>
+<rect x="90" y="298.0" width="75" height="132.0" rx="4" fill="#94A3B8"/>
+<text x="127.5" y="290.0" font-size="14" fill="#334155" font-weight="700" text-anchor="middle">60%</text>
+<rect x="175" y="209.99999999999997" width="75" height="220.00000000000003" rx="4" fill="#2563EB"/>
+<text x="212.5" y="201.99999999999997" font-size="14" fill="#1D4ED8" font-weight="700" text-anchor="middle">100%</text>
+<text x="170" y="454" font-size="13" fill="#334155" text-anchor="middle">Standard</text>
+<rect x="310" y="364.0" width="75" height="66.0" rx="4" fill="#94A3B8"/>
+<text x="347.5" y="356.0" font-size="14" fill="#334155" font-weight="700" text-anchor="middle">30%</text>
+<rect x="395" y="209.99999999999997" width="75" height="220.00000000000003" rx="4" fill="#2563EB"/>
+<text x="432.5" y="201.99999999999997" font-size="14" fill="#1D4ED8" font-weight="700" text-anchor="middle">100%</text>
+<text x="390" y="454" font-size="13" fill="#334155" text-anchor="middle">Hard</text>
+<rect x="530" y="309.0" width="75" height="121.00000000000001" rx="4" fill="#94A3B8"/>
+<text x="567.5" y="301.0" font-size="14" fill="#334155" font-weight="700" text-anchor="middle">55%</text>
+<rect x="615" y="209.99999999999997" width="75" height="220.00000000000003" rx="4" fill="#2563EB"/>
+<text x="652.5" y="201.99999999999997" font-size="14" fill="#1D4ED8" font-weight="700" text-anchor="middle">100%</text>
+<text x="610" y="454" font-size="13" fill="#334155" text-anchor="middle">Messy</text>
+<line x1="60" y1="430" x2="740" y2="430" stroke="#CBD5E1"/>
+<rect x="560" y="140" width="14" height="14" rx="3" fill="#94A3B8"/><text x="580" y="152" font-size="12" fill="#334155">Alarm-rule baseline</text>
+<rect x="560" y="162" width="14" height="14" rx="3" fill="#2563EB"/><text x="580" y="174" font-size="12" fill="#334155">Claude agent</text>
+<rect x="788" y="104" width="388" height="380" rx="14" fill="#F8FAFC" stroke="#E2E8F0"/>
+<text x="808" y="136" font-size="16" fill="#0F172A" font-weight="700">Cost per incident</text>
+<text x="808" y="158" font-size="12" fill="#64748B">standard suite, both 100% accurate</text>
+<text x="908" y="209" font-size="13" fill="#0F172A" font-weight="700" text-anchor="end">Haiku 5.5</text>
+<rect x="920" y="190" width="200" height="28" rx="4" fill="#F1F5F9"/>
+<rect x="920" y="190" width="5.7" height="28" rx="4" fill="#2563EB"/>
+<text x="933.75" y="209" font-size="13" fill="#334155" font-weight="700">$0.0023</text>
+<text x="908" y="259" font-size="13" fill="#334155" text-anchor="end">Opus 5.5</text>
+<rect x="920" y="240" width="200" height="28" rx="4" fill="#F1F5F9"/>
+<rect x="920" y="240" width="200.0" height="28" rx="4" fill="#94A3B8"/>
+<text x="1110.0" y="259" font-size="13" fill="#FFFFFF" font-weight="700" text-anchor="end">$0.080</text>
+<text x="808" y="312" font-size="13" fill="#475569">The small model matched the large one</text>
+<text x="808" y="334" font-size="13" fill="#475569">at about 1/35 of the cost.</text>
+<text x="808" y="356" font-size="13" fill="#475569"></text>
+<text x="808" y="378" font-size="13" fill="#475569">A full 20-incident run on Haiku</text>
+<text x="808" y="400" font-size="13" fill="#475569">costs about 5 cents.</text>
+<rect x="24" y="508" width="276" height="172" rx="14" fill="#EFF6FF" stroke="#BFDBFE"/>
+<text x="44" y="554" font-size="34" fill="#1D4ED8" font-weight="800">100%</text>
+<text x="44" y="584" font-size="14" fill="#0F172A" font-weight="700">on all three suites</text>
+<text x="44" y="608" font-size="12" fill="#475569">standard, hard and messy</text>
+<text x="44" y="626" font-size="12" fill="#475569">(60 incidents) with Claude</text>
+<text x="44" y="644" font-size="12" fill="#475569">Haiku 5.5 and the full prompt</text>
+<rect x="316" y="508" width="276" height="172" rx="14" fill="#F0FDF4" stroke="#BBF7D0"/>
+<text x="336" y="554" font-size="30" fill="#15803D" font-weight="800">20% → 100%</text>
+<text x="336" y="584" font-size="14" fill="#0F172A" font-weight="700">when the key alarm is missing</text>
+<text x="336" y="608" font-size="12" fill="#475569">rules need every alarm to arrive;</text>
+<text x="336" y="626" font-size="12" fill="#475569">the agent works from KPIs,</text>
+<text x="336" y="644" font-size="12" fill="#475569">topology and the change log</text>
+<rect x="608" y="508" width="276" height="172" rx="14" fill="#FFFBEB" stroke="#FDE68A"/>
+<text x="628" y="554" font-size="30" fill="#B45309" font-weight="800">95% → 100%</text>
+<text x="628" y="584" font-size="14" fill="#0F172A" font-weight="700">one line of domain knowledge</text>
+<text x="628" y="608" font-size="12" fill="#475569">the minimal prompt blamed a site</text>
+<text x="628" y="626" font-size="12" fill="#475569">in planned maintenance; &quot;planned</text>
+<text x="628" y="644" font-size="12" fill="#475569">work is not a fault&quot; fixed it</text>
+<rect x="900" y="508" width="276" height="172" rx="14" fill="#FAF5FF" stroke="#E9D5FF"/>
+<text x="920" y="554" font-size="34" fill="#6E56CF" font-weight="800">0</text>
+<text x="920" y="584" font-size="14" fill="#0F172A" font-weight="700">changes made by the AI</text>
+<text x="920" y="608" font-size="12" fill="#475569">read-only tools, audit trail,</text>
+<text x="920" y="626" font-size="12" fill="#475569">every fix needs human approval</text>
+<text x="920" y="644" font-size="12" fill="#475569">(EU AI Act-style oversight)</text>
+</svg>
