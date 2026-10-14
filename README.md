@@ -23,19 +23,7 @@ Engineers then dig through KPIs, topology and change logs by hand. That is slow,
 
 ## How it works
 
-```mermaid
-flowchart LR
-    SIM["Fault-injection simulator<br/>5G network: Berlin · Hamburg · Munich · Cologne<br/>alarms · KPIs · change log · ground truth"]
-    subgraph Agent["NOC Copilot agent (Claude Opus 5.5)"]
-      LOOP["Investigation loop<br/>(audit-logged)"]
-    end
-    TOOLS["Read-only tools<br/>list_alarms · get_topology · get_kpis<br/>find_kpi_anomalies · get_change_log · search_runbooks"]
-    RCA["Structured RCA (JSON schema)<br/>fault type · root-cause entity · evidence<br/>proposed actions → human approval"]
-    BENCH["Benchmark<br/>accuracy vs ground truth<br/>vs alarm-rule baseline"]
-    SIM --> TOOLS
-    LOOP <--> TOOLS
-    LOOP --> RCA --> BENCH
-```
+![How NOC Copilot works](docs/how-it-works.svg)
 
 | Piece | What it does |
 |---|---|
@@ -45,6 +33,10 @@ flowchart LR
 | **Benchmark** (`benchmark.py`) | Runs any method over a balanced set of incidents and reports accuracy by fault type and by "alarms present / primary alarm missing". |
 
 ## Results
+
+### What we get from it
+
+![What we get from NOC Copilot](docs/what-we-get.svg)
 
 A case is correct only if **both** the fault type and the exact root-cause entity match. Incidents cover all 5 fault types; half have the primary alarm missing. Measured on 12 Oct 2026, effort `medium`:
 
@@ -226,6 +218,7 @@ src/noc_copilot/
   benchmark.py    # scoring and reports
   cli.py          # `noc` command
   runbooks/       # NOC runbooks the agent can search
+docs/             # how-it-works and what-we-get diagrams (SVG)
 tests/            # 193 tests incl. agent loop with a scripted fake client
 ```
 
